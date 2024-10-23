@@ -52,7 +52,7 @@ def check_fall_detection(
         print("Some keypoints are missing")
         return False
     
-    # Calculate conditions
+    # Calculate conditions, source: https://github.com/Y-B-Class-Projects/Human-Fall-Detection
     left_condition = (left_shoulder_y > left_foot_y - len_factor and
                       left_body_y > left_foot_y - (len_factor / 2) and
                       left_shoulder_y > left_body_y - (len_factor / 2))
