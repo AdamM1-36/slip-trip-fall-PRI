@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+	# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -171,7 +171,7 @@ cython_debug/
 video/
 
 # secondary datasets
-fall_dataset/
+# fall_dataset/
 
 # kerastuner
 ml/my_dir/
