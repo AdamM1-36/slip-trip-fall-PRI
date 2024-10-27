@@ -169,9 +169,10 @@ cython_debug/
 
 # primary datasets
 video/
+dataset_primer/
 
 # secondary datasets
 # fall_dataset/
 
 # kerastuner
-ml/my_dir/
+ml/keras_tuner
