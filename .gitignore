@@ -168,11 +168,11 @@ cython_debug/
 *.pt
 
 # primary datasets
-video/
 dataset_primer/
 
-# secondary datasets
-# fall_dataset/
+# calibration datasets
+coco_dataset/
+my_dataset/
 
 # kerastuner
 ml/keras_tuner

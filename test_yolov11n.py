@@ -1,12 +1,22 @@
 import cv2
 import math
 import tensorflow as tf
+import torch
 import numpy as np
 from ultralytics import YOLO
 from test_draw import draw_keypoints_and_skeleton
 from utils.coco_keypoints import COCOKeypoints
 
-WEIGHT = "yolo11n-pose.pt"
+gpus = tf.config.experimental.list_physical_devices("GPU")
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
+
+if torch.cuda.is_available():
+    WEIGHT = "yolo11n-pose.engine"
+    print("Using TensorRT fp16 model")
+else:
+    WEIGHT = "yolo11n-pose.pt"
+    print("Using Pytorch model")
 pose_model = YOLO(WEIGHT)
 fall_model = tf.keras.models.load_model("ml/fall_detection_model.keras")
 
@@ -151,7 +161,8 @@ def run_ml():
             break
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
-        results = pose_model.predict(frame, stream=False)
+        with torch.no_grad():
+            results = pose_model.predict(frame, stream=True)
         for result in results:
             if result.boxes.data.size(0) == 0:
                 continue
