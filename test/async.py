@@ -12,6 +12,7 @@ import numpy as np
 import asyncio
 import queue, threading
 import tensorflow as tf
+import joblib
 from concurrent.futures import ThreadPoolExecutor
 from ultralytics import YOLO
 from test_draw import draw_keypoints_and_skeleton
@@ -24,6 +25,7 @@ use_tensorrt = True
 # tf fall detection cause slowdown of about 12-14 ms per person per frame
 # -> fixed with batch processing (~15ms per frame)
 use_ml_fall = True
+fall_threshold = 0.9  # Threshold very high?
 # CONFIG END
 
 gpus = tf.config.experimental.list_physical_devices("GPU")
@@ -41,7 +43,7 @@ pose_model = YOLO(WEIGHT)
 fall_model = tf.keras.models.load_model("ml/fall_detection_model.keras")
 
 # Load video
-video_path = "fall_dataset/videos/video_4.mp4"
+video_path = "fall_dataset/videos/video_1.mp4"
 cap = cv2.VideoCapture(video_path)
 print(f"video fps is {cap.get(cv2.CAP_PROP_FPS)}")
 
@@ -54,6 +56,7 @@ if not cap.isOpened():
 executor = ThreadPoolExecutor(max_workers=4)
 frame_buffer = queue.Queue(maxsize=10)
 processed_frame_buffer = queue.Queue(maxsize=10)
+scaler = joblib.load("ml/scaler.pkl")
 
 
 def check_fall_detection(
@@ -145,12 +148,13 @@ def fall_detection(boxes, keypoints, is_using_ml=False):
         box_coords.append((x_min, y_min, x_max, y_max))
 
     keypoint_nparray = np.array(keypoint_list)
+    keypoint_nparray = scaler.transform(keypoint_nparray)
 
     if is_using_ml:
         fall_predictions = fall_model.predict(keypoint_nparray)
         print(f"Fall predictions: {fall_predictions}")
         for i, prediction in enumerate(fall_predictions):
-            fall_detected = prediction[0] >= 0.6
+            fall_detected = prediction[0] >= fall_threshold
             x_min, y_min, x_max, y_max = box_coords[i]
 
             if fall_detected:
