@@ -54,8 +54,8 @@ if not cap.isOpened():
 
 # Thread safe queues
 executor = ThreadPoolExecutor(max_workers=4)
-frame_buffer = queue.Queue(maxsize=10)
-processed_frame_buffer = queue.Queue(maxsize=10)
+frame_buffer = queue.Queue(maxsize=15)
+processed_frame_buffer = queue.Queue(maxsize=15)
 scaler = joblib.load("ml/scaler.pkl")
 
 
@@ -195,6 +195,11 @@ def fall_detection_worker(is_using_ml=True):
             break
 
         frame, boxes, keypoints = frame_data
+        if not boxes or not keypoints:
+            processed_frame_buffer.pit_nowait(frame)
+            frame_buffer.task_done()
+            continue
+
         fall_results = fall_detection(boxes, keypoints, is_using_ml)
         for fall_detected, bbox in fall_results:
             if fall_detected:
@@ -240,10 +245,14 @@ async def process_frame(frame):
             keypoints.append(result.keypoints.data[i])
             draw_keypoints_and_skeleton(frame, keypoints[-1])
 
-    try:
-        frame_buffer.put_nowait((frame.copy(), boxes, keypoints))
-    except queue.Full:
-        print("W: Frame buffer full, skipping frame")
+    if boxes and keypoints:
+        try:
+            frame_buffer.put_nowait((frame.copy(), boxes, keypoints))
+            print(f"I: Frame counter: {frame_buffer.qsize()}")
+        except queue.Full:
+            print("W: Frame buffer full, skipping frame")
+    else:
+        print("W: No person detected in frame")
 
 
 async def run(is_using_ml=True):
