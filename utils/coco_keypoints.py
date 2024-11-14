@@ -90,7 +90,7 @@ def extract_keypoints(results):
         if result.names[0] == "person":
             for person_keypoints in result.keypoints:
                 try:
-                    points = person_keypoints.data.numpy().flatten().tolist()
+                    points = person_keypoints.data.cpu().numpy().flatten().tolist()
                     keypoints.append(COCOKeypoints.from_list(points))
                 except Exception as e:
                     print(f"Error extracting keypoints: {e}")

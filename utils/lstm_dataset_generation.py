@@ -7,9 +7,7 @@ from coco_keypoints import extract_keypoints
 show_output = True
 
 model = YOLO(os.path.join(os.path.dirname(__file__), "../yolo11n-pose.pt"))
-video_folder = os.path.join(
-    os.path.dirname(__file__), "../dataset_primer/2/Trip/Labels"
-)
+video_folder = os.path.join(os.path.dirname(__file__), "../dataset_primer/trip/")
 
 # Define columns without confidence values
 COCO_KEYPOINTS_NO_CONF = [
@@ -57,12 +55,15 @@ def process_video(video_path, model, show_output=False):
         ret, frame = cap.read()
         if not ret:
             break
+
+        frame = cv2.resize(frame, (640, 640))
         results = model(frame)
         keypoints = extract_keypoints(results)
         if keypoints:
             event_frames.extend(keypoints)
             # Keep only the last 30 frames
             event_frames = event_frames[-30:]
+
         if show_output:
             # Use result.plot() to visualize the results
             for result in results:
@@ -78,8 +79,9 @@ def process_video(video_path, model, show_output=False):
 
 def create_dataset(video_folder, model, show_output=False):
     data = []
-    for i in range(1, 10):
-        video_path = os.path.join(video_folder, f"Trip{i}.mp4")
+    for i, video_file in enumerate(os.listdir(video_folder)):
+        if video_file.endswith(".mp4"):
+            video_path = os.path.join(video_folder, video_file)
         frames = process_video(video_path, model, show_output)
         if len(frames) >= 30:
             for frame in frames:
@@ -99,7 +101,7 @@ if __name__ == "__main__":
     dataset = create_dataset(video_folder, model, show_output)
     dataset.to_csv(
         os.path.join(
-            os.path.dirname(__file__), "../dataset_primer/2/Trip/trip_dataset.csv"
+            os.path.dirname(__file__), "../dataset_primer/trip/trip_dataset.csv"
         ),
         index=False,
     )

@@ -1,26 +1,31 @@
+import asyncio
+import math
 import os
-
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["TF_CPP_MIN_VLOG_LEVEL"] = "3"
+import queue
+import threading
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
-import math
-import torch
-import numpy as np
-import asyncio
-import queue, threading
-import tensorflow as tf
 import joblib
-from concurrent.futures import ThreadPoolExecutor
+import numpy as np
+import torch
 from ultralytics import YOLO
+
 from test_draw import draw_keypoints_and_skeleton
 from utils.coco_keypoints import COCOKeypoints
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_CPP_MIN_VLOG_LEVEL"] = "3"
+warnings.simplefilter("ignore", UserWarning)
+
+import tensorflow as tf
+
 
 # CONFIG
-use_tensorrt = True
-use_ml_fall = True
-fall_threshold = 0.9
+USE_TENSORRT = True
+USING_ML_FALL = True
+FALL_THRESHOLD = 0.9
 # CONFIG END
 
 gpus = tf.config.experimental.list_physical_devices("GPU")
@@ -28,7 +33,7 @@ for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 
 # Load models
-if torch.cuda.is_available() and use_tensorrt:
+if torch.cuda.is_available() and USE_TENSORRT:
     WEIGHT = "yolo11n-pose.engine"
     print("Using TensorRT fp16 model")
 else:
@@ -49,8 +54,8 @@ if not cap.isOpened():
 
 # Thread safe queues
 executor = ThreadPoolExecutor(max_workers=4)
-frame_buffer = queue.Queue(maxsize=10)
-processed_frame_buffer = queue.Queue(maxsize=10)
+frame_buffer = queue.Queue(maxsize=20)
+processed_frame_buffer = queue.Queue(maxsize=20)
 scaler = joblib.load("ml/scaler.pkl")
 
 
@@ -147,9 +152,9 @@ def fall_detection(boxes, keypoints, is_using_ml=False):
 
     if is_using_ml:
         fall_predictions = fall_model.predict(keypoint_nparray_standardized)
-        print(f"Fall predictions: {fall_predictions}")
+        # print(f"Fall predictions: {fall_predictions}")
         for i, prediction in enumerate(fall_predictions):
-            fall_detected = prediction[0] >= fall_threshold
+            fall_detected = prediction[0] >= FALL_THRESHOLD
             x_min, y_min, x_max, y_max = box_coords[i]
 
             if fall_detected:
@@ -190,28 +195,36 @@ def fall_detection_worker(is_using_ml=True):
             break
 
         frame, boxes, keypoints = frame_data
-        fall_results = fall_detection(boxes, keypoints, is_using_ml)
-        for fall_detected, bbox in fall_results:
-            if fall_detected:
-                x_min, y_min, x_max, y_max = bbox
-                cv2.rectangle(
-                    frame,
-                    (int(x_min), int(y_min)),
-                    (int(x_max), int(y_max)),
-                    color=(0, 0, 255),
-                    thickness=5,
-                    lineType=cv2.LINE_AA,
-                )
-                cv2.putText(
-                    frame,
-                    "Person Fell down",
-                    (11, 100),
-                    0,
-                    1,
-                    [0, 0, 255],
-                    thickness=3,
-                    lineType=cv2.LINE_AA,
-                )
+        if not boxes or not keypoints:
+            processed_frame_buffer.put_nowait(frame)
+            frame_buffer.task_done()
+            continue
+
+        try:
+            fall_results = fall_detection(boxes, keypoints, is_using_ml)
+            for fall_detected, bbox in fall_results:
+                if fall_detected:
+                    x_min, y_min, x_max, y_max = bbox
+                    cv2.rectangle(
+                        frame,
+                        (int(x_min), int(y_min)),
+                        (int(x_max), int(y_max)),
+                        color=(0, 0, 255),
+                        thickness=5,
+                        lineType=cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        frame,
+                        "Person Fell down",
+                        (11, 100),
+                        0,
+                        1,
+                        [0, 0, 255],
+                        thickness=3,
+                        lineType=cv2.LINE_AA,
+                    )
+        except Exception as e:
+            print(f"Error in fall detection: {e}")
 
         try:
             processed_frame_buffer.put_nowait(frame)
@@ -228,17 +241,24 @@ async def process_frame(frame):
 
     boxes, keypoints = [], []
     for result in results:
-        if result.boxes.data.size(0) == 0:
+        if result.boxes is None or result.keypoints is None:
             continue
-        for i in range(result.boxes.data.size(0)):
+        output_size = len(result.boxes.data)
+        if output_size == 0:
+            continue
+        for i in range(output_size):
             boxes.append(result.boxes.data[i])
             keypoints.append(result.keypoints.data[i])
             draw_keypoints_and_skeleton(frame, keypoints[-1])
 
-    try:
-        frame_buffer.put_nowait((frame.copy(), boxes, keypoints))
-    except queue.Full:
-        print("W: Frame buffer full, skipping frame")
+    if boxes and keypoints:
+        try:
+            frame_buffer.put_nowait((frame.copy(), boxes, keypoints))
+            print(f"I: Frame counter: {frame_buffer.qsize()}")
+        except queue.Full:
+            print("W: Frame buffer full, skipping frame")
+    else:
+        print("W: No person detected in frame")
 
 
 async def run(is_using_ml=True):
@@ -265,7 +285,7 @@ async def run(is_using_ml=True):
 
 if __name__ == "__main__":
     fall_thread = threading.Thread(
-        target=fall_detection_worker, args=(use_ml_fall,), daemon=True
+        target=fall_detection_worker, args=(USING_ML_FALL,), daemon=True
     )
     fall_thread.start()
-    asyncio.run(run(use_ml_fall))
+    asyncio.run(run(USING_ML_FALL))

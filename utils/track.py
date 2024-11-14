@@ -4,15 +4,21 @@ from ultralytics import YOLO
 
 model = YOLO("../yolo11n-pose.pt")
 
-video_path = os.path.join(os.path.dirname(__file__), "../dataset_primer/2/1_edited.mp4")
-cap = cv2.VideoCapture(video_path)
+video_folder = os.path.join(os.path.dirname(__file__), "../dataset_primer/trip/")
+target_size = (640, 480)
 
-while cap.isOpened():
-    success, frame = cap.read()
 
-    if success:
+def process_video(video_folder, model):
+    cap = cv2.VideoCapture(video_folder)
+
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success:
+            break
+
+        frame = cv2.resize(frame, target_size)
+
         results = model.track(frame, persist=True)
-
         for result in results:
             for obj in result.boxes:
                 tracker_id = obj.id
@@ -25,11 +31,18 @@ while cap.isOpened():
         annotated_frame = results[0].plot()
 
         cv2.imshow("YOLO11 Tracking", annotated_frame)
-
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
-    else:
-        break
 
-cap.release()
-cv2.destroyAllWindows()
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    for root, dirs, files in os.walk(video_folder):
+        files.sort()
+        for file in files:
+            if file.endswith(".mp4"):
+                video_path = os.path.join(root, file)
+                print(f"video_path: {video_path}")
+                process_video(video_path, model)
