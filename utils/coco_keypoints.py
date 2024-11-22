@@ -25,6 +25,7 @@ from typing import List
 
 @dataclass
 class COCOKeypoints:
+    person_index: int  # Tracker ID or person index
     nose_x: float
     nose_y: float
     nose_conf: float
@@ -78,20 +79,23 @@ class COCOKeypoints:
     right_ankle_conf: float
 
     @classmethod
-    def from_list(cls, keypoints_list: List[float]):
+    def from_list(cls, person_index: int, keypoints_list: List[float]):
         if len(keypoints_list) != 51:
             raise ValueError(f"Expected 51 elements, got {len(keypoints_list)}")
-        return cls(*keypoints_list)
+        return cls(person_index, *keypoints_list)
 
 
 def extract_keypoints(results):
     keypoints = []
     for result in results:
         if result.names[0] == "person":
-            for person_keypoints in result.keypoints:
+            for obj, person_keypoints in zip(result.boxes, result.keypoints):
                 try:
+                    tracker_id = (
+                        obj.id.item() if obj.id is not None else -1
+                    )  # Assign -1 if no ID
                     points = person_keypoints.data.cpu().numpy().flatten().tolist()
-                    keypoints.append(COCOKeypoints.from_list(points))
+                    keypoints.append(COCOKeypoints.from_list(tracker_id, points))
                 except Exception as e:
                     print(f"Error extracting keypoints: {e}")
                     continue
