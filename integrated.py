@@ -41,7 +41,7 @@ except RuntimeError as e:
 load_dotenv()
 cap = cv2.VideoCapture(os.getenv("RTSP_URL"))
 cap_lock = Lock()
-MIN_FRAMES = 20
+MIN_FRAMES = 25
 MAX_TIMESTEPS = 30
 rolling_buffer = {}
 event_queue = Queue()
@@ -124,7 +124,6 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Error saat mengirim pesan: {e}")
 
-
 def send_telegram_photo(photo_path):
     url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
     files = {"photo": open(photo_path, "rb")}
@@ -137,7 +136,6 @@ def send_telegram_photo(photo_path):
             print(f"Gagal mengirim foto. Status code: {response.status_code}")
     except Exception as e:
         print(f"Error saat mengirim foto: {e}")
-
 
 def listen_to_bot():
     global status_detection
@@ -177,7 +175,6 @@ def listen_to_bot():
         # Menunggu beberapa detik sebelum mengambil pembaruan selanjutnya
         time.sleep(2)
 
-
 def generate_pdf(type, current_time, image_path):
     # Tentukan folder tempat menyimpan PDF
     folder_path = "laporan/"  # Folder yang diinginkan
@@ -203,7 +200,7 @@ def generate_pdf(type, current_time, image_path):
 
     try:
         image = PILImage.open(image_path)
-        image = image.resize((400, 300))
+        image = image.resize((640, 480))
         temp_image_path = "resized_image.jpg"
         image.save(temp_image_path)
         c.drawImage(temp_image_path, 100, height - 500)
@@ -274,12 +271,13 @@ def filter_keypoints(keypoints):
         return False
     return True
 
-def process_frame(results, tracker_id, lstm_model, scaler):
+def lstm_predict(results, tracker_id, lstm_model, scaler):
     global rolling_buffer
 
     if tracker_id not in rolling_buffer:
-        rolling_buffer[tracker_id] = []  # Initialize buffer for a new person
-
+        rolling_buffer[tracker_id] = []
+        print(f"New person added to rolling_buffer with tracker_id: {tracker_id}")
+        
     keypoints = extract_keypoints([results])
     if keypoints:
         for kp in keypoints:
@@ -294,9 +292,9 @@ def process_frame(results, tracker_id, lstm_model, scaler):
                     rolling_buffer[tracker_id] = rolling_buffer[tracker_id][
                         -MAX_TIMESTEPS:
                     ]
+                    print(f"Updated rolling_buffer for tracker_id {tracker_id}")
 
-    # print(f"Tracker ID: {tracker_id}, Frames: {len(rolling_buffer[tracker_id])}")
-    # Predict only if we have at least `min_frames` in the buffer
+    # Ensure we have enough frames before making a prediction
     if len(rolling_buffer[tracker_id]) >= MIN_FRAMES:
         frame_data = np.array(rolling_buffer[tracker_id])
         frame_data = frame_data.reshape(-1, len(COCO_KEYPOINTS_NO_CONF))
@@ -313,6 +311,7 @@ def process_frame(results, tracker_id, lstm_model, scaler):
         )
 
         # Predict the class
+        print(f"Making prediction for tracker_id {tracker_id}")
         prediction = lstm_model.predict(frame_data, verbose=0)
         predicted_class = np.argmax(prediction, axis=1)[0]
         return labels[predicted_class]
@@ -328,7 +327,7 @@ def lstm_results_loop(keypoint_results, person_labels, frame):
             else:
                 continue
 
-            label = process_frame(result, tracker_id, lstm_model, scaler)
+            label = lstm_predict(result, tracker_id, lstm_model, scaler)
             if label:
                 person_labels[tracker_id] = label
 
@@ -349,7 +348,6 @@ def lstm_results_loop(keypoint_results, person_labels, frame):
     return frame, person_labels
 
 async def get_frame_async():
-    # Wrap access to VideoCapture in a thread lock
     global cap
     with cap_lock:
         ret, frame = await asyncio.to_thread(cap.read)
@@ -359,6 +357,7 @@ async def get_frame_async():
     return frame
 
 async def send_alert_async(websocket, payload):
+    print("Pesan terkirim ke ESP32")
     await websocket.send_text(payload)
 
 async def app(scope, receive, send):
@@ -373,6 +372,7 @@ async def app(scope, receive, send):
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"Frame width: {frame_width}, Frame height: {frame_height}, FPS: {fps}")
         
         if save_output:
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -385,9 +385,13 @@ async def app(scope, receive, send):
             out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
 
         last_detection_time = 0  
-        detection_delay = 30  # Delay waktu dalam detik
+        detection_delay = 10  # Delay waktu dalam detik
+        fall_was_detected = False
         prev_frame_time = time.time()
         fall_frame = 0
+        
+        cv2.namedWindow("Frame", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Frame", 1280, 720)
         while cap.isOpened():
             now = datetime.now()
             current_time = now.strftime("%H-%M-%S %d-%m-%Y")
@@ -400,7 +404,7 @@ async def app(scope, receive, send):
             prev_frame_time = new_frame_time
 
             # Tampilkan status deteksi pada frame
-            status_text = "Deteksi: ON" if status_detection else "Deteksi: OFF"
+            status_text = "Deteksi: ON" if status_detection and not fall_was_detected else "Deteksi: OFF"
             cv2.putText(frame, status_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
             cv2.putText(frame, f"FPS: {int(fps)}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
             
@@ -410,33 +414,42 @@ async def app(scope, receive, send):
                 
                 for result in fall_results:
                     class_id_list = list(result.boxes.cls)
+                    # print(f"fall frame: {fall_frame}")
                     if 0 in class_id_list:
-                        fall_frame += 1
-                        
-                        # cv2.imshow("Fall", frame)
-                        current_time_delay = time.time()
-                        if current_time_delay - last_detection_time >= detection_delay and fall_frame == 20:
-                            print("Detected state: Fall")
-                            frame = result.plot()
-                            process_report(frame, 'fall', start_time, current_time)
-                            await send_alert_async(websocket, 'fall')
-                            last_detection_time = current_time_delay
-                            fall_frame = 0
+                        fall_frame += 1 
                     else:
+                        # Jangan langsung direset, kurangi dengan 1 atau set ke 0
+                        fall_frame = max(0, fall_frame - 1)
+                        # fall_frame = 0
+                        
+                    if fall_frame == 20 and not fall_was_detected:
+                        print("Detected state: Fall")
+                        frame = result.plot()
+                        process_report(frame, 'fall', start_time, current_time)
+                        await send_alert_async(websocket, 'fall')
+                        last_detection_time = time.time()
                         fall_frame = 0
+                        fall_was_detected = True
+                        break
                 
                 frame, person_labels = lstm_results_loop(keypoint_results, person_labels, frame)
-                # frame = keypoint_results[0].plot()
-                # person_labels = { [id : label], [id2 : label2] }
-                for state in person_labels.values():
-                    if state != "Unknown" and state != "Walking":
-                        current_time_delay = time.time()
-                        if current_time_delay - last_detection_time >= detection_delay:
+                if not fall_was_detected:
+                    for state in person_labels.values():
+                        if state != "Unknown" and state != "Walking":
                             print(f"Detected state: {state}")
                             process_report(frame, state.lower(), start_time, current_time)
                             await send_alert_async(websocket, state.lower())
-                            last_detection_time = current_time_delay
-                            
+                            last_detection_time = time.time()
+                            rolling_buffer.clear()
+                            print("Rolling_buffer cleared")
+                            fall_was_detected = True
+                            break
+                    person_labels.clear()
+
+            if fall_was_detected and (time.time() - last_detection_time) >= detection_delay:
+                print("Turning detection back ON")
+                fall_was_detected = False
+                last_detection_time = 0
 
             if show_output and isinstance(frame, np.ndarray):
                 cv2.imshow("Frame", frame)
@@ -444,6 +457,7 @@ async def app(scope, receive, send):
                 out.write(frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
+            
     except WebSocketDisconnect:
         print("WebSocket connection was disconnected.")
     except Exception as e:
@@ -452,6 +466,4 @@ async def app(scope, receive, send):
         cap.release()
         cv2.destroyAllWindows()
         await websocket.close()
-
-        # await event_queue.put(None) 
-        # await sender_task
+        
