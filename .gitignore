@@ -176,3 +176,9 @@ my_dataset/
 
 # kerastuner
 ml/keras_tuner
+
+# output
+pri_images/
+*.pdf
+*.xlsx
+model-besar/
