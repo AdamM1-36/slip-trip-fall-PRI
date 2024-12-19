@@ -63,8 +63,8 @@ col_type = "B"
 col_image = "C"
 
 # Konfigurasi bot Telegram
-TOKEN = "7917230413:AAEYJx9PnSTo9IyYvezMSiEdAsYB9kak_-A"
-CHAT_ID = "-1002437276925"
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 status_detection = True  # Status deteksi awal
 
 # Waktu mulai program
@@ -235,7 +235,6 @@ def process_report(frame, type, start_time, current_time, row=0):
     generate_pdf(type, current_time, pict)
     Thread(target=send_telegram_message, args=(f"Terdeteksi kejadian {type.capitalize()} pada {current_time}. Mohon segera diperiksa kondisi terkininya",)).start()
     Thread(target=send_telegram_photo, args=(pict,)).start()
-
 
 Thread(target=listen_to_bot, daemon=True).start()
 

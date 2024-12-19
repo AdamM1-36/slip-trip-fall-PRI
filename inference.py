@@ -1,9 +1,11 @@
 import cv2
 from ultralytics import YOLO
+from dotenv import load_dotenv
+
 
 model = YOLO("trained_models/v5-new_64_50.engine", task="detect")
 # model = YOLO("trained_models/v5-new_64_50.pt")
-cap = cv2.VideoCapture("rtsp://10.3.51.251/live/ch00_0")
+cap = cv2.VideoCapture(os.getenv("RTSP_URL"))
 # cap = cv2.VideoCapture('fall_dataset/videos/video_5.mp4')
 # cap = cv2.VideoCapture("new_datasets/3.mp4")
 while True:
