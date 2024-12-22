@@ -16,7 +16,7 @@ from ultralytics import YOLO
 # Test directory
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
 
-from test_draw import draw_keypoints_and_skeleton
+from .test_draw import draw_keypoints_and_skeleton
 from utils.coco_keypoints import COCOKeypoints
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"

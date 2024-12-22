@@ -165,10 +165,19 @@ cython_debug/
 .DS_Store
 
 # weight
+*.h5
 *.pt
+*.onnx
+*.cache
+*.engine
+*.json
+model-besar/
 
 # primary datasets
 dataset_primer/
+
+# secondary datasets
+fall_dataset/
 
 # calibration datasets
 coco_dataset/
@@ -177,8 +186,12 @@ my_dataset/
 # kerastuner
 ml/keras_tuner
 
-# output
+# outputs and reports
 pri_images/
+lstm_output/
+
+laporan/
 *.pdf
+
+excel/
 *.xlsx
-model-besar/

@@ -2,33 +2,27 @@ import asyncio
 import os
 import sys
 import time
-from datetime import datetime
-from threading import Thread
-from threading import Lock
 from asyncio import Queue
+from datetime import datetime
+from threading import Lock, Thread
+
 import cv2
 import joblib
 import numpy as np
 import pandas as pd
-import requests
 import tensorflow as tf
+from dotenv import load_dotenv
 from keras._tf_keras.keras.models import load_model
 from keras._tf_keras.keras.utils import pad_sequences
 from openpyxl import Workbook
-from openpyxl.drawing.image import Image
-from PIL import Image as PILImage
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from starlette.applications import Starlette
-from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from ultralytics import YOLO
-from dotenv import load_dotenv
 
+from utils.coco_keypoints import COCOKeypoints, extract_keypoints
+from utils.report import process_report
+from utils.telegram_report import listen_to_tele_bot
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
-from utils.coco_keypoints import COCOKeypoints, extract_keypoints
 
 gpus = tf.config.experimental.list_physical_devices("GPU")
 try:
@@ -41,202 +35,54 @@ except RuntimeError as e:
 load_dotenv()
 cap = cv2.VideoCapture(os.getenv("RTSP_URL"))
 cap_lock = Lock()
-MIN_FRAMES = 25
+MIN_FRAMES = 20
 MAX_TIMESTEPS = 30
 rolling_buffer = {}
 event_queue = Queue()
+
 # Load models and scalers
 KEYPOINT_MODEL_PATH = "ml/yolo11n-pose.engine"
-LSTM_MODEL_PATH = "ml/lstm/slip_fall_detector.keras"
+LSTM_MODEL_PATH = "ml/lstm/slip_fall_detector_V2_with-cases.keras"
 FALL_MODEL_PATH = "ml/fall.engine"
-SCALER_PATH = "ml/lstm/lstm_scaler.pkl"
+UPSTAIRS = True
+
+if UPSTAIRS:
+    SCALER_PATH = "ml/lstm/scaler_upstairs.pkl"
+else:
+    SCALER_PATH = "ml/lstm/scaler_downstairs.pkl"
 
 lstm_model = load_model(LSTM_MODEL_PATH)
 scaler = joblib.load(SCALER_PATH)
 keypoint_model = YOLO(KEYPOINT_MODEL_PATH, task="pose")
 fall_model = YOLO(FALL_MODEL_PATH, task="detect")
 
-wb = Workbook()
-ws = wb.active
-col_time = "A"
-col_type = "B"
-col_image = "C"
 
 # Konfigurasi bot Telegram
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 status_detection = True  # Status deteksi awal
 
+# Konfigurasi excel report
+wb = Workbook()
+ws = wb.active
+
 # Waktu mulai program
 start_time = datetime.now().strftime("%H-%M-%S %d-%m-%Y")
 
 target_size = (640, 480)
-labels = ["Slip", "SlipFall", "Trip", "TripFall", "Walking"]
+# labels = ["Slip", "SlipFall", "Trip", "TripFall", "Walking"]
+labels = ["Slip", "Trip", "Walking", "Fall"]
 
 # Define columns without confidence values
-COCO_KEYPOINTS_NO_CONF = [
-    "nose_x",
-    "nose_y",
-    "left_eye_x",
-    "left_eye_y",
-    "right_eye_x",
-    "right_eye_y",
-    "left_ear_x",
-    "left_ear_y",
-    "right_ear_x",
-    "right_ear_y",
-    "left_shoulder_x",
-    "left_shoulder_y",
-    "right_shoulder_x",
-    "right_shoulder_y",
-    "left_elbow_x",
-    "left_elbow_y",
-    "right_elbow_x",
-    "right_elbow_y",
-    "left_wrist_x",
-    "left_wrist_y",
-    "right_wrist_x",
-    "right_wrist_y",
-    "left_hip_x",
-    "left_hip_y",
-    "right_hip_x",
-    "right_hip_y",
-    "left_knee_x",
-    "left_knee_y",
-    "right_knee_x",
-    "right_knee_y",
-    "left_ankle_x",
-    "left_ankle_y",
-    "right_ankle_x",
-    "right_ankle_y",
-]
+COCO_KEYPOINTS_NO_CONF = COCOKeypoints.keypoints_no_conf()
 
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
-    try:
-        response = requests.post(url, data=data)
-        # print(f"data telegram : {data}")
-        if response.status_code == 200:
-            print("Peringatan terkirim ke Telegram.")
-        else:
-            print(f"Gagal mengirim pesan. Status code: {response.status_code}")
-    except Exception as e:
-        print(f"Error saat mengirim pesan: {e}")
+Thread(target=listen_to_tele_bot, args= (TOKEN,), daemon=True).start()
 
-def send_telegram_photo(photo_path):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-    files = {"photo": open(photo_path, "rb")}
-    data = {"chat_id": CHAT_ID}
-    try:
-        response = requests.post(url, files=files, data=data)
-        if response.status_code == 200:
-            print("Foto terkirim ke Telegram.")
-        else:
-            print(f"Gagal mengirim foto. Status code: {response.status_code}")
-    except Exception as e:
-        print(f"Error saat mengirim foto: {e}")
-
-def listen_to_bot():
-    global status_detection
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-    last_update_id = None  # Variabel untuk menyimpan ID pembaruan terakhir yang sudah diproses
-
-    while True:
-        try:
-            # Membuat URL dengan offset agar hanya mengambil pembaruan yang lebih baru dari last_update_id
-            if last_update_id:
-                url_with_offset = f"{url}?offset={last_update_id + 1}"
-            else:
-                url_with_offset = url
-
-            response = requests.get(url_with_offset)
-            
-            if response.status_code == 200:
-                updates = response.json().get("result", [])
-                if updates:
-                    for update in updates:
-                        update_id = update["update_id"]
-                        message = update.get("message", {}).get("text", "").lower()
-
-                        # Memproses hanya jika update_id lebih besar dari yang terakhir diproses
-                        if last_update_id is None or update_id > last_update_id:
-                            last_update_id = update_id  # Perbarui last_update_id
-                            if message == "matikan":
-                                status_detection = False
-                                send_telegram_message("Sistem deteksi telah dimatikan.")
-                            elif message == "nyalakan":
-                                status_detection = True
-                                send_telegram_message("Sistem deteksi telah dihidupkan.")
-
-        except Exception as e:
-            print(f"Error saat mendengarkan bot: {e}")
-
-        # Menunggu beberapa detik sebelum mengambil pembaruan selanjutnya
-        time.sleep(2)
-
-def generate_pdf(type, current_time, image_path):
-    # Tentukan folder tempat menyimpan PDF
-    folder_path = "laporan/"  # Folder yang diinginkan
-    if not os.path.exists(folder_path):  # Jika folder belum ada, buat folder
-        os.makedirs(folder_path)
-    # Tentukan nama file PDF dengan menambahkan folder path
-    current_time = current_time.format("%H-%M-%S %d-%m-%Y")
-    pdf_filename = os.path.join(folder_path, f"report_{type}_{current_time}.pdf")
-    
-    c = canvas.Canvas(pdf_filename, pagesize=letter)
-    width, height = letter
-
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, height - 50, "LAPORAN DETEKSI FALL")
-
-    c.setFont("Helvetica", 12)
-    c.drawString(100, height - 100, f"Waktu dan Tanggal Kejadian: {current_time}")
-    c.drawString(100, height - 120, "Tempat Kejadian: Tangga Teknik Fisika ITS")
-    c.drawString(100, height - 140, f"Jenis Kejadian: {type.capitalize()}")
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(100, height - 170, "Dokumentasi Kejadian:")
-
-    try:
-        image = PILImage.open(image_path)
-        image = image.resize((640, 480))
-        temp_image_path = "resized_image.jpg"
-        image.save(temp_image_path)
-        c.drawImage(temp_image_path, 100, height - 500)
-        os.remove(temp_image_path)
-    except Exception as e:
-        print(f"Error saat memuat gambar: {e}")
-
-    c.setFont("Helvetica-Oblique", 10)
-    c.setFillColor(colors.red)
-    c.drawString(
-        100, 100, "Terdeteksi Kejadan. Mohon segera diperiksa kondisi terkininya."
-    )
-
-    c.save()
-
-def process_report(frame, type, start_time, current_time, row=0):
-    folder_path = f"pri_images/{type}"
-    os.makedirs(folder_path, exist_ok=True)
-
-    pict = f"{folder_path}/{current_time}.jpg"
-    cv2.imwrite(pict, frame)
-
-    img = Image(pict)
-    img.height = 300
-    img.width = 400
-    
-    row += 20
-    ws[f"{col_time}{row}"] = current_time
-    ws[f"{col_type}{row}"] = type
-    ws.add_image(img, f"{col_image}{row}")
-    wb.save(f"result_{start_time}.xlsx")
-    generate_pdf(type, current_time, pict)
-    Thread(target=send_telegram_message, args=(f"Terdeteksi kejadian {type.capitalize()} pada {current_time}. Mohon segera diperiksa kondisi terkininya",)).start()
-    Thread(target=send_telegram_photo, args=(pict,)).start()
-
-Thread(target=listen_to_bot, daemon=True).start()
+def report_detection(frame, detection_type, start_time, current_time, token, chat_id, wb, ws, websocket, state):
+    thread = Thread(target=process_report, args=(wb, ws, frame, detection_type, start_time, current_time, token, chat_id))
+    thread.start()
+    asyncio.create_task(send_alert_async(websocket, state.lower()))
+    print(f"Reported detection: {detection_type}")
 
 def filter_keypoints(keypoints):
     if np.all(keypoints == 0):
@@ -279,18 +125,13 @@ def lstm_predict(results, tracker_id, lstm_model, scaler):
         
     keypoints = extract_keypoints([results])
     if keypoints:
-        for kp in keypoints:
-            if kp.person_index == tracker_id:
-                keypoint_coord = []
-                for keypoint_name in COCO_KEYPOINTS_NO_CONF:
-                    value = getattr(kp, keypoint_name, None)
-                    keypoint_coord.append(value)
+        for keypoint in keypoints:
+            if keypoint.person_index == tracker_id:
+                keypoint_coord = [getattr(keypoint, k, None) for k in COCO_KEYPOINTS_NO_CONF]
 
                 if filter_keypoints(np.array(keypoint_coord)):
                     rolling_buffer[tracker_id].append(keypoint_coord)
-                    rolling_buffer[tracker_id] = rolling_buffer[tracker_id][
-                        -MAX_TIMESTEPS:
-                    ]
+                    rolling_buffer[tracker_id] = rolling_buffer[tracker_id][-MAX_TIMESTEPS:]
                     print(f"Updated rolling_buffer for tracker_id {tracker_id}")
 
     # Ensure we have enough frames before making a prediction
@@ -313,20 +154,21 @@ def lstm_predict(results, tracker_id, lstm_model, scaler):
         print(f"Making prediction for tracker_id {tracker_id}")
         prediction = lstm_model.predict(frame_data, verbose=0)
         predicted_class = np.argmax(prediction, axis=1)[0]
+        print(f"Predicted class: {predicted_class} : {labels[predicted_class]}")
         return labels[predicted_class]
 
     return "Unknown"  # No prediction if insufficient frames
 
 def lstm_results_loop(keypoint_results, person_labels, frame):
-    for result in keypoint_results:
-        for obj in result.boxes:
+    for keypoint_result in keypoint_results:
+        for obj in keypoint_result.boxes:
             tracker_id = obj.id
             if tracker_id is not None:
                 tracker_id = tracker_id.item()
             else:
                 continue
 
-            label = lstm_predict(result, tracker_id, lstm_model, scaler)
+            label = lstm_predict(keypoint_result, tracker_id, lstm_model, scaler)
             if label:
                 person_labels[tracker_id] = label
 
@@ -359,6 +201,15 @@ async def send_alert_async(websocket, payload):
     print("Pesan terkirim ke ESP32")
     await websocket.send_text(payload)
 
+def run_fall_detection(frame, results):
+    results['fall_results'] = fall_model(frame, conf=0.8, verbose=False)
+    
+def run_keypoint_and_lstm(frame, person_labels, results):
+    keypoint_results = keypoint_model.track(frame, persist=True, verbose=False, conf=0.5)
+    frame, person_labels = lstm_results_loop(keypoint_results, person_labels, frame)
+    results['frame'] = frame
+    results['person_labels'] = person_labels
+
 async def app(scope, receive, send):
     websocket = WebSocket(scope=scope, receive=receive, send=send)
     await websocket.accept()
@@ -389,8 +240,8 @@ async def app(scope, receive, send):
         prev_frame_time = time.time()
         fall_frame = 0
         
-        cv2.namedWindow("Frame", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Frame", 1280, 720)
+        cv2.namedWindow("Output Video", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Output Video", 1280, 720)
         while cap.isOpened():
             now = datetime.now()
             current_time = now.strftime("%H-%M-%S %d-%m-%Y")
@@ -408,36 +259,43 @@ async def app(scope, receive, send):
             cv2.putText(frame, f"FPS: {int(fps)}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
             
             if status_detection:
-                fall_results = fall_model(frame, conf=0.8, verbose=False)
-                keypoint_results = keypoint_model.track(frame, persist=True, verbose=False, conf=0.8)
+                results = {}
                 
-                for result in fall_results:
-                    class_id_list = list(result.boxes.cls)
+                # Create threads
+                fall_thread = Thread(target=run_fall_detection, args=(frame, results), daemon=True)
+                keypoint_lstm_thread = Thread(target=run_keypoint_and_lstm, args=(frame, person_labels, results), daemon=True)
+                fall_thread.start()
+                keypoint_lstm_thread.start()
+                fall_thread.join()
+                keypoint_lstm_thread.join()
+                
+                fall_results = results['fall_results']
+                frame, person_labels = results['person_labels']
+
+                for fall_result in fall_results:
+                    class_id_list = list(fall_result.boxes.cls)
                     # print(f"fall frame: {fall_frame}")
                     if 0 in class_id_list:
                         fall_frame += 1 
                     else:
-                        # Jangan langsung direset, kurangi dengan 1 atau set ke 0
-                        fall_frame = max(0, fall_frame - 1)
+                        # test
+                        fall_frame = max(0, fall_frame - 5)
                         # fall_frame = 0
                         
                     if fall_frame == 20 and not fall_was_detected:
                         print("Detected state: Fall")
-                        frame = result.plot()
-                        process_report(frame, 'fall', start_time, current_time)
-                        await send_alert_async(websocket, 'fall')
+                        frame = fall_result.plot()
+                        report_detection(frame, 'fall', start_time, current_time, TOKEN, CHAT_ID, wb, ws, websocket, 'fall')
                         last_detection_time = time.time()
                         fall_frame = 0
                         fall_was_detected = True
                         break
                 
-                frame, person_labels = lstm_results_loop(keypoint_results, person_labels, frame)
                 if not fall_was_detected:
                     for state in person_labels.values():
                         if state != "Unknown" and state != "Walking":
                             print(f"Detected state: {state}")
-                            process_report(frame, state.lower(), start_time, current_time)
-                            await send_alert_async(websocket, state.lower())
+                            report_detection(frame, state.lower(), start_time, current_time, TOKEN, CHAT_ID, wb, ws, websocket, state)
                             last_detection_time = time.time()
                             rolling_buffer.clear()
                             print("Rolling_buffer cleared")
@@ -451,7 +309,7 @@ async def app(scope, receive, send):
                 last_detection_time = 0
 
             if show_output and isinstance(frame, np.ndarray):
-                cv2.imshow("Frame", frame)
+                cv2.imshow("Output Video", frame)
             if save_output and isinstance(frame, np.ndarray):
                 out.write(frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
