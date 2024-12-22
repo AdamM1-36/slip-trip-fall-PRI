@@ -76,11 +76,12 @@ COCO_KEYPOINTS_NO_CONF = [
 MAX_TIMESTEPS = 20
 MIN_TIMESTEPS = 10
 
-def process_video(video_path, model, keep_all_frames=False, show_output=False):
+def process_video(video_path, model, show_output=False):
     cap = cv2.VideoCapture(video_path)
     data = []
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    max_frames = total_frames // 20 if keep_all_frames else 60
+    max_frames = 60
+    print(f"total : max frames = {total_frames} : {max_frames}")
     frame_count = 0
     
     while cap.isOpened() and frame_count < max_frames:
@@ -109,7 +110,7 @@ def process_video(video_path, model, keep_all_frames=False, show_output=False):
                         frame_count += 1
 
                         # Keep at most the last MAX_TIMESTEPS data
-                        if not keep_all_frames and len(data) > MAX_TIMESTEPS:
+                        if len(data) > MAX_TIMESTEPS:
                             data = data[-MAX_TIMESTEPS:]
 
         if show_output:
@@ -190,11 +191,11 @@ def create_dataset_with_cases(base_folder, model, show_output=False):
                 )
                 for video_file in video_files:
                     video_path = os.path.join(label_path, video_file)
-                    keep_all_frames = original_label == "Walking"
-                    frames = process_video(video_path, model, keep_all_frames, show_output)
+                    personalize_id = original_label == "Walking"
+                    frames = process_video(video_path, model, show_output)
 
                     if len(frames) >= MIN_TIMESTEPS:
-                        print(f"Processed video: {video_file}")
+                        print(f"Processing video: {video_file}")
                         for frame in frames:
                             frame_data = {
                                 k: v
@@ -203,7 +204,7 @@ def create_dataset_with_cases(base_folder, model, show_output=False):
                             }
                             frame_data["segment_index"] = segment_index
                             frame_data["person_index"] = frame.person_index
-                            if not keep_all_frames:
+                            if not personalize_id:
                                 frame_data["person_index"] = 0
                             frame_data["frame_index"] = frame.frame_index  # Frame index starts at 1
                             frame_data["label"] = label_mapping[original_label]
