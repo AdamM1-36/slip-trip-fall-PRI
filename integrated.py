@@ -21,6 +21,7 @@ from ultralytics import YOLO
 from utils.coco_keypoints import COCOKeypoints, extract_keypoints
 from utils.report import process_report
 from utils.telegram_report import listen_to_tele_bot
+from utils.shared_state import shared_state
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 
@@ -34,19 +35,23 @@ except RuntimeError as e:
 # Global variables
 load_dotenv()
 cap = cv2.VideoCapture(os.getenv("RTSP_URL"))
+# cap = cv2.VideoCapture("final.mp4")
+# cap = cv2.VideoCapture("dataset_primer/edited/upstairs/Walking/clip_Walking0041_003.mp4")
+
 cap_lock = Lock()
-MIN_FRAMES = 10
-MAX_TIMESTEPS = 20
+MIN_FRAMES = 16
+MAX_TIMESTEPS = 24
 rolling_buffer = {}
 event_queue = Queue()
 
 # Load models and scalers
-KEYPOINT_MODEL_PATH = "ml/yolo11m-pose.engine"
-LSTM_MODEL_PATH = "ml/lstm/slip_fall_detector_V3_upstairs.keras"
-FALL_MODEL_PATH = "ml/fall.engine"
+KEYPOINT_MODEL_PATH = "models_used/yolo11m-pose.engine"
+FALL_MODEL_PATH = "models_used/fall.engine"
 UPSTAIRS = True
+REPORT = True
 
 if UPSTAIRS:
+    LSTM_MODEL_PATH = "ml/lstm/slip_fall_detector_V3_upstairs.keras"
     SCALER_PATH = "ml/lstm/scaler_upstairs.pkl"
 else:
     SCALER_PATH = "ml/lstm/scaler_downstairs.pkl"
@@ -60,14 +65,14 @@ results_lock = Lock()
 # Konfigurasi bot Telegram
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-status_detection = True  # Status deteksi awal
+shared_state.status_detection = True  # Status deteksi awal
 
 # Konfigurasi excel report
 wb = Workbook()
 ws = wb.active
 
 # Waktu mulai program
-start_time = datetime.now().strftime("%H-%M-%S %d-%m-%Y")
+start_time = datetime.now().strftime("%H:%M:%S %d-%m-%Y")
 
 target_size = (640, 480)
 # labels = ["Slip", "SlipFall", "Trip", "TripFall", "Walking"]
@@ -77,6 +82,8 @@ labels = ["Slip", "Trip", "Walking", "Fall"]
 COCO_KEYPOINTS_NO_CONF = COCOKeypoints.keypoints_no_conf()
 
 Thread(target=listen_to_tele_bot, args= (TOKEN,), daemon=True).start()
+
+
 
 def report_detection(frame, detection_type, start_time, current_time, token, chat_id, wb, ws, websocket, state):
     thread = Thread(target=process_report, args=(wb, ws, frame, detection_type, start_time, current_time, token, chat_id))
@@ -92,18 +99,14 @@ def filter_keypoints(keypoints):
             [
                 COCO_KEYPOINTS_NO_CONF.index(k)
                 for k in [
-                    "left_shoulder_x",
-                    "left_shoulder_y",
-                    "right_shoulder_x",
-                    "right_shoulder_y",
-                    "left_hip_x",
-                    "left_hip_y",
-                    "right_hip_x",
-                    "right_hip_y",
-                    "left_knee_x",
-                    "left_knee_y",
-                    "right_knee_x",
-                    "right_knee_y",
+                    # "left_hip_x",
+                    # "left_hip_y",
+                    # "right_hip_x",
+                    # "right_hip_y",
+                    # "left_knee_x",
+                    # "left_knee_y",
+                    # "right_knee_x",
+                    # "right_knee_y",
                     "left_ankle_x",
                     "left_ankle_y",
                     "right_ankle_x",
@@ -131,8 +134,12 @@ def lstm_predict(results, tracker_id, lstm_model, scaler):
 
                 if filter_keypoints(np.array(keypoint_coord)):
                     rolling_buffer[tracker_id].append(keypoint_coord)
-                    rolling_buffer[tracker_id] = rolling_buffer[tracker_id][-MAX_TIMESTEPS:]
-                    print(f"Updated rolling_buffer for tracker_id {tracker_id}")
+                    # print(f"Appended rolling_buffer for tracker_id {tracker_id}")
+                    if len(rolling_buffer[tracker_id]) > MAX_TIMESTEPS:
+                        rolling_buffer[tracker_id] = rolling_buffer[tracker_id][-MAX_TIMESTEPS:]
+                        # print(f"dropped frames for tracker_id {tracker_id}")
+                    
+                    # print(f"Length of rolling_buffer for tracker_id {tracker_id}: {len(rolling_buffer[tracker_id])}")
 
     # Ensure we have enough frames before making a prediction
     if len(rolling_buffer[tracker_id]) >= MIN_FRAMES:
@@ -147,12 +154,11 @@ def lstm_predict(results, tracker_id, lstm_model, scaler):
             maxlen=MAX_TIMESTEPS,
             dtype="float32",
             padding="post",
-            truncating="pre",
         )
 
         # Predict the class
         print(f"Making prediction for tracker_id {tracker_id}")
-        prediction = lstm_model.predict(frame_data, verbose=0)
+        prediction = lstm_model.predict(frame_data, verbose=False)
         predicted_class = np.argmax(prediction, axis=1)[0]
         print(f"Predicted class: {predicted_class} : {labels[predicted_class]}")
         return labels[predicted_class]
@@ -220,12 +226,14 @@ def handle_fall_detection(fall_was_detected, frame, fall_results, fall_frame_cou
         if fall_frame_counter == 20 and not fall_was_detected:
             print("Detected state: Fall")
             frame = fall_result.plot()
-            current_time = datetime.now().strftime("%H-%M-%S %d-%m-%Y")
-            # report_detection(frame, 'fall', start_time, current_time, TOKEN, CHAT_ID, wb, ws, websocket, 'fall')
+            current_time = datetime.now().strftime("%H:%M:%S %d-%m-%Y")
+            if REPORT:
+                report_detection(frame, 'fall', start_time, current_time, TOKEN, CHAT_ID, wb, ws, websocket, 'fall')
             last_detection_time = time.time()
             fall_frame_counter = 0
             fall_was_detected = True
             break
+    # print(F"fall_frame_counter: {fall_frame_counter}")
     return fall_was_detected, fall_frame_counter, frame, last_detection_time
     
 ### FALL DETECTION FUNCTION END ###
@@ -233,27 +241,42 @@ def handle_fall_detection(fall_was_detected, frame, fall_results, fall_frame_cou
 ### LSTM DETECTION FUNCTION START ###
 
 def run_keypoint_and_lstm(frame, person_labels, results):
-    keypoint_results = keypoint_model.track(frame, persist=True, verbose=False, conf=0.8)
+    keypoint_results = keypoint_model.track(frame, persist=True, verbose=False, conf=0.6)
     frame, person_labels = lstm_keypoint_classification(keypoint_results, person_labels, frame)
     with results_lock:
         results['frame'] = frame
         results['person_labels'] = person_labels
         
-def handle_lstm_detection(fall_was_detected, frame, person_labels, last_detection_time, websocket):
+def handle_lstm_detection(lstm_was_detected, frame, person_labels, lstm_frame_counter, last_detection_time, last_detected_state, websocket):
     global rolling_buffer
-    for state in person_labels.values():
-        if state != "Unknown" and state != "Walking":
+    for tracker_id, state in person_labels.items():
+        if state in ["Slip", "Trip"]:
+            lstm_frame_counter[state] += 1
+            last_detected_state[tracker_id] = state
+            # print lstm_frame_counter dictionary key and values:
+            for key, value in lstm_frame_counter.items():
+                print(f"{key}: {value}")
+        else:
+            # print(f"Reset logic")
+            if tracker_id in last_detected_state and last_detected_state[tracker_id] in lstm_frame_counter:
+                lstm_frame_counter[last_detected_state[tracker_id]] = max(0, lstm_frame_counter[last_detected_state[tracker_id]] - 3)
+        
+        if lstm_frame_counter[state] == 5 and not lstm_was_detected:
             print(f"Detected state: {state}")
-            current_time = datetime.now().strftime("%H-%M-%S %d-%m-%Y")
-            # report_detection(frame, state.lower(), start_time, current_time, TOKEN, CHAT_ID, wb, ws, websocket, state)
+            current_time = datetime.now().strftime("%H:%M:%S %d-%m-%Y")
+            if REPORT:
+                report_detection(frame, state.lower(), start_time, current_time, TOKEN, CHAT_ID, wb, ws, websocket, state)
             last_detection_time = time.time()
-            fall_was_detected = True
+            lstm_was_detected = True
             break
-    if fall_was_detected:
+    
+    if lstm_was_detected:
         rolling_buffer.clear()
         person_labels.clear()
+        lstm_frame_counter = {key: 0 for key in lstm_frame_counter.keys()}
         print("LSTM buffer cleared")
-    return fall_was_detected, last_detection_time
+    
+    return lstm_was_detected, lstm_frame_counter, frame, last_detection_time, last_detected_state
 
 ### LSTM DETECTION FUNCTION END ###
 
@@ -281,11 +304,15 @@ async def app(scope, receive, send):
             )
             out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
 
-        last_detection_time = 0  
-        detection_delay = 10  # Delay jeda antar deteksi dalam detik
+        last_fall_time = 0
+        last_lstm_time = 0
+        detection_delay = 15  # Delay jeda antar deteksi dalam detik
         fall_was_detected = False
+        lstm_was_detected = False
         prev_frame_time = time.time()
         fall_frame_counter = 0
+        lstm_frame_counter = {label: 0 for label in ['Slip', 'Trip', 'Walking', 'Unknown']}
+        lstm_last_detected_state = {}
         
         cv2.namedWindow("Output Video", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Output Video", 1280, 720)
@@ -300,45 +327,56 @@ async def app(scope, receive, send):
             prev_frame_time = new_frame_time
 
             # Show status text
-            status_text = "Deteksi: ON" if status_detection and not fall_was_detected else "Deteksi: OFF"
+            status_text = "Deteksi: ON" if shared_state.status_detection and not fall_was_detected else "Deteksi: OFF"
             cv2.putText(frame, status_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
             cv2.putText(frame, f"FPS: {int(fps)}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
             
-            if status_detection:
+            if shared_state.status_detection:
                 # Results dictionary to store results from threads
                 results = {}
                 
                 # Do detection in parallel using threads  
-                # Prevent running on delay
+                # if not fall_was_detected:
                 if not fall_was_detected:
+                    # print("Running fall detection")
                     fall_thread = Thread(target=run_fall_detection, args=(frame, results), daemon=True)
-                    keypoint_lstm_thread = Thread(target=run_keypoint_and_lstm, args=(frame, person_labels, results), daemon=True)
                     fall_thread.start()
-                    keypoint_lstm_thread.start()
                     fall_thread.join()
-                    keypoint_lstm_thread.join()
-
-                    # Access results from threads safely
-                    if 'fall_results' not in results or 'person_labels' not in results:
-                        print("Threads failed to populate results correctly")
+                    if 'fall_results' not in results :
+                        print("Threads failed to access fall results correctly")
                         continue  # Skip processing for this frame
                     fall_results = results['fall_results']
-                    frame, person_labels = results['frame'], results['person_labels']
                     
                     # Handle fall detection and report
-                    fall_was_detected, fall_frame_counter, frame, last_detection_time = \
-                        handle_fall_detection(fall_was_detected, frame, fall_results, fall_frame_counter, last_detection_time, websocket)
-                    # Handle LSTM detection and report
-                    fall_was_detected, last_detection_time = \
-                        handle_lstm_detection(fall_was_detected, frame, person_labels, last_detection_time, websocket)
-                else:
-                    print("Detection is paused due to previous detection")
-                    time.sleep(5)
+                    fall_was_detected, fall_frame_counter, frame, last_fall_time = \
+                    handle_fall_detection(fall_was_detected, frame, fall_results, fall_frame_counter, last_fall_time, websocket)
+                
+                if not lstm_was_detected:
+                    # print("Running LSTM detection")
+                    keypoint_lstm_thread = Thread(target=run_keypoint_and_lstm, args=(frame, person_labels, results), daemon=True)
+                    keypoint_lstm_thread.start()
+                    keypoint_lstm_thread.join()
+                    
+                    if 'person_labels' not in results or 'frame' not in results:
+                        print("Threads failed to access lstm results correctly")
+                        continue
+                    # Access lstm results from threads variable
+                    frame, person_labels = results['frame'], results['person_labels']
+                    
+                    # Handle LSTM detection and reporXt
+                    lstm_was_detected, lstm_frame_counter, frame, last_lstm_time, lstm_last_detected_state = \
+                        handle_lstm_detection(lstm_was_detected, frame, person_labels, lstm_frame_counter, last_lstm_time, lstm_last_detected_state, websocket)
+                
                 # Handle detection system pause and reset
-                if fall_was_detected and (time.time() - last_detection_time) >= detection_delay:
+                if fall_was_detected and (time.time() - last_fall_time) >= detection_delay:
                     print("Turning detection back ON")
                     fall_was_detected = False
-                    last_detection_time = 0
+                    last_fall_time = 0
+                
+                if lstm_was_detected and (time.time() - last_lstm_time) >= detection_delay:
+                    print("Turning detection back ON")
+                    lstm_was_detected = False
+                    last_lstm_time = 0
 
             # Handle output display and saving
             if show_output and isinstance(frame, np.ndarray):

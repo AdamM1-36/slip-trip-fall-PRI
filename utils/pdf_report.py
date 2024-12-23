@@ -31,7 +31,7 @@ def generate_pdf(type, current_time, image_path):
 
     try:
         image = PILImage.open(image_path)
-        image = image.resize((640, 480))
+        image = image.resize((400, 300))
         temp_image_path = "resized_image.jpg"
         image.save(temp_image_path)
         c.drawImage(temp_image_path, 100, height - 500)

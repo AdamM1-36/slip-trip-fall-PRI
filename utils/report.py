@@ -33,5 +33,5 @@ def process_report(wb, ws, frame, type, start_time, current_time, token, chat_id
     generate_pdf(type, current_time, pict)
     
     message = f"Terdeteksi kejadian {type.capitalize()} pada {current_time}. Mohon segera diperiksa kondisi terkininya"
-    Thread(target=send_telegram_message, args=(message, token, chat_id)).start()
-    Thread(target=send_telegram_photo, args=(pict, token, chat_id)).start()
+    Thread(target=send_telegram_message, args=(message,)).start()
+    Thread(target=send_telegram_photo, args=(pict,)).start()

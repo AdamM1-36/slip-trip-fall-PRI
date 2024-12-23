@@ -172,9 +172,11 @@ cython_debug/
 *.engine
 *.json
 model-besar/
+models_used/
 
 # primary datasets
 dataset_primer/
+*.mp4
 
 # secondary datasets
 fall_dataset/

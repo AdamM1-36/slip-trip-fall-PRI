@@ -1,9 +1,12 @@
 import time
-
+import os
 import requests
+from .shared_state import shared_state
 
 
-def send_telegram_message(message, token, chat_id):
+def send_telegram_message(message):
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = {"chat_id": chat_id, "text": message}
     try:
@@ -16,7 +19,9 @@ def send_telegram_message(message, token, chat_id):
     except Exception as e:
         print(f"Error saat mengirim pesan: {e}")
 
-def send_telegram_photo(photo_path, token, chat_id):
+def send_telegram_photo(photo_path):
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
     files = {"photo": open(photo_path, "rb")}
     data = {"chat_id": chat_id}
@@ -29,8 +34,8 @@ def send_telegram_photo(photo_path, token, chat_id):
     except Exception as e:
         print(f"Error saat mengirim foto: {e}")
 
+## Todo: fungsi ini belum mengubah status_detection global
 def listen_to_tele_bot(token):
-    global status_detection
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     last_update_id = None  # Variabel untuk menyimpan ID pembaruan terakhir yang sudah diproses
 
@@ -55,10 +60,10 @@ def listen_to_tele_bot(token):
                         if last_update_id is None or update_id > last_update_id:
                             last_update_id = update_id  # Perbarui last_update_id
                             if message == "matikan":
-                                status_detection = False
+                                shared_state.status_detection = False
                                 send_telegram_message("Sistem deteksi telah dimatikan.")
                             elif message == "nyalakan":
-                                status_detection = True
+                                shared_state.status_detection = True
                                 send_telegram_message("Sistem deteksi telah dihidupkan.")
 
         except Exception as e:

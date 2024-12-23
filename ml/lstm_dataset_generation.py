@@ -73,8 +73,8 @@ COCO_KEYPOINTS_NO_CONF = [
 ]
 
 
-MAX_TIMESTEPS = 20
-MIN_TIMESTEPS = 10
+MAX_TIMESTEPS = 24
+MIN_TIMESTEPS = 12
 
 def process_video(video_path, model, show_output=False):
     cap = cv2.VideoCapture(video_path)
@@ -123,52 +123,6 @@ def process_video(video_path, model, show_output=False):
     if show_output:
         cv2.destroyAllWindows()
     return data
-
-def create_dataset(base_folder, model, show_output=False):
-    data = []
-    dropped_videos_count = {label: 0 for label in labels}  # Dictionary to count dropped videos for each label
-    
-    for original_label in label_mapping.keys():  # Use the original labels for processing
-        label_path = os.path.join(base_folder, original_label)
-        if os.path.isdir(label_path):
-            print(f"Processing folder: {original_label}")
-            video_files = sorted(
-                [f for f in os.listdir(label_path) if f.endswith(".mp4")]
-            )
-            for i, video_file in enumerate(video_files):
-                video_path = os.path.join(label_path, video_file)
-                keep_all_frames = original_label == "Walking"
-                frames = process_video(video_path, model, keep_all_frames, show_output)
-
-                if len(frames) >= MIN_TIMESTEPS:
-                    print(f"Processed video: {video_file}")
-                    for frame in frames:
-                        frame_data = {
-                            k: v
-                            for k, v in frame.__dict__.items()
-                            if k in COCO_KEYPOINTS_NO_CONF
-                        }
-                        frame_data["segment_index"] = i
-                        frame_data["person_index"] = frame.person_index
-                        if not keep_all_frames:
-                            frame_data["person_index"] = 0
-                        frame_data["label"] = label_mapping[original_label]  # Map to merged label
-                        data.append(frame_data)
-                else:
-                    dropped_videos_count[label_mapping[original_label]] += 1  # Increment counter for dropped videos
-    
-    # Sort data by label order
-    label_order = {label: index for index, label in enumerate(labels)}
-    data.sort(key=lambda x: (label_order[x["label"]], x["segment_index"], x["person_index"]))
-    
-    columns = COCO_KEYPOINTS_NO_CONF + ["segment_index", "person_index", "label"]
-    df = pd.DataFrame(data, columns=columns)
-    
-    # Print the dropped videos count for each label
-    for label, count in dropped_videos_count.items():
-        print(f"Number of videos dropped for {label}: {count}")
-    
-    return df
 
 def create_dataset_with_cases(base_folder, model, show_output=False):
     data = []
